@@ -113,11 +113,14 @@ func runSSH(cCmd *cobra.Command, args []string) (exit int) {
 	args = pkg.TrimToDashes(args)
 
 	var sshClient *ssh.SSHForwardingClient
-	timeout := getSSHTimeoutFlag(cCmd)
-	if tun := getTunnelFlag(cCmd); tun != "" {
-		sshClient, err = ssh.NewTunnelledSSHClient(globalFlags.SSHUserName, tun, addr, getChecker(cCmd), flagSSHAgentForwarding, timeout)
+
+	sshConfig := getSSHConfig(cCmd)
+
+	timeout := getSSHTimeoutFlag(sshConfig)
+	if tun := getTunnelFlag(sshConfig); tun != "" {
+		sshClient, err = ssh.NewTunnelledSSHClient(globalFlags.SSHUserName, tun, addr, getChecker(sshConfig), flagSSHAgentForwarding, timeout)
 	} else {
-		sshClient, err = ssh.NewSSHClient(globalFlags.SSHUserName, addr, getChecker(cCmd), flagSSHAgentForwarding, timeout)
+		sshClient, err = ssh.NewSSHClient(globalFlags.SSHUserName, addr, getChecker(sshConfig), flagSSHAgentForwarding, timeout)
 	}
 	if err != nil {
 		stderr("Failed building SSH client: %v", err)
@@ -266,11 +269,14 @@ func runLocalCommand(cmd string, args ...string) (error, int) {
 // any error encountered and the exit status of the command
 func runRemoteCommand(cCmd *cobra.Command, addr string, cmd string, args ...string) (err error, exit int) {
 	var sshClient *ssh.SSHForwardingClient
-	timeout := getSSHTimeoutFlag(cCmd)
-	if tun := getTunnelFlag(cCmd); tun != "" {
-		sshClient, err = ssh.NewTunnelledSSHClient(globalFlags.SSHUserName, tun, addr, getChecker(cCmd), false, timeout)
+
+	sshConfig := getSSHConfig(cCmd)
+
+	timeout := getSSHTimeoutFlag(sshConfig)
+	if tun := getTunnelFlag(sshConfig); tun != "" {
+		sshClient, err = ssh.NewTunnelledSSHClient(globalFlags.SSHUserName, tun, addr, getChecker(sshConfig), false, timeout)
 	} else {
-		sshClient, err = ssh.NewSSHClient(globalFlags.SSHUserName, addr, getChecker(cCmd), false, timeout)
+		sshClient, err = ssh.NewSSHClient(globalFlags.SSHUserName, addr, getChecker(sshConfig), false, timeout)
 	}
 	if err != nil {
 		return err, -1

@@ -60,8 +60,8 @@ recommended to upgrade fleetctl to prevent incompatibility issues.
 ####################################################################
 `
 
-	clientDriverAPI  = "API"
-	clientDriverEtcd = "etcd"
+	ClientDriverAPI  = "API"
+	ClientDriverEtcd = "etcd"
 
 	defaultEndpoint  = "unix:///var/run/fleet.sock"
 	defaultSleepTime = 2000 * time.Millisecond
@@ -144,8 +144,8 @@ func init() {
 
 	cmdFleet.PersistentFlags().BoolVar(&globalFlags.Debug, "debug", false, "Print out more debug information to stderr")
 	cmdFleet.PersistentFlags().BoolVar(&globalFlags.Version, "version", false, "Print the version and exit")
-	cmdFleet.PersistentFlags().StringVar(&globalFlags.ClientDriver, "driver", clientDriverAPI, fmt.Sprintf("Adapter used to execute fleetctl commands. Options include %q and %q.", clientDriverAPI, clientDriverEtcd))
-	cmdFleet.PersistentFlags().StringVar(&globalFlags.Endpoint, "endpoint", defaultEndpoint, fmt.Sprintf("Location of the fleet API if --driver=%s. Alternatively, if --driver=%s, location of the etcd API.", clientDriverAPI, clientDriverEtcd))
+	cmdFleet.PersistentFlags().StringVar(&globalFlags.ClientDriver, "driver", ClientDriverAPI, fmt.Sprintf("Adapter used to execute fleetctl commands. Options include %q and %q.", ClientDriverAPI, ClientDriverEtcd))
+	cmdFleet.PersistentFlags().StringVar(&globalFlags.Endpoint, "endpoint", defaultEndpoint, fmt.Sprintf("Location of the fleet API if --driver=%s. Alternatively, if --driver=%s, location of the etcd API.", ClientDriverAPI, ClientDriverEtcd))
 	cmdFleet.PersistentFlags().StringVar(&globalFlags.EtcdKeyPrefix, "etcd-key-prefix", registry.DefaultKeyPrefix, "Keyspace for fleet data in etcd (development use only!)")
 
 	cmdFleet.PersistentFlags().StringVar(&globalFlags.KeyFile, "key-file", "", "Location of TLS key file used to secure communication with the fleet API or etcd")
@@ -174,7 +174,6 @@ type Command struct {
 	Flags       flag.FlagSet // Set of flags associated with this command
 
 	Run func(args []string) int // Run a command with the given arguments, return exit status
-
 }
 
 func getFlags(flagset *flag.FlagSet) (flags []*flag.Flag) {
@@ -264,8 +263,8 @@ func main() {
 	if globalFlags.Endpoint != "" && globalFlags.ClientDriver == "" {
 		if u, err := url.Parse(strings.Split(globalFlags.Endpoint, ",")[0]); err == nil {
 			if _, port, err := net.SplitHostPort(u.Host); err == nil && (port == "4001" || port == "2379") {
-				log.Debugf("Defaulting to --driver=%s as --endpoint appears to be etcd", clientDriverEtcd)
-				globalFlags.ClientDriver = clientDriverEtcd
+				log.Debugf("Defaulting to --driver=%s as --endpoint appears to be etcd", ClientDriverEtcd)
+				globalFlags.ClientDriver = ClientDriverEtcd
 			}
 		}
 	}
@@ -301,9 +300,63 @@ func getFlagsFromEnv(prefix string, fs *pflag.FlagSet) {
 	})
 }
 
+type SSHConfig struct {
+	Tunnel                string
+	SSHUserName           string
+	StrictHostKeyChecking bool
+	KnownHostsFile        string
+	SshTimeout            float64
+}
+
+type ClientConfig struct {
+	*SSHConfig
+
+	ClientDriver string
+	EndPoint     string
+	ReqTimeout   float64
+
+	CAFile   string
+	CertFile string
+	KeyFile  string
+
+	EtcdKeyPrefix   string
+	ExperimentalAPI bool
+}
+
+func getSSHConfig(cCmd *cobra.Command) *SSHConfig {
+	config := &SSHConfig{}
+	config.Tunnel, _ = cmdFleet.PersistentFlags().GetString("tunnel")
+	config.SSHUserName, _ = cmdFleet.PersistentFlags().GetString("ssh-username")
+	config.StrictHostKeyChecking, _ = cmdFleet.PersistentFlags().GetBool("strict-host-key-checking")
+	config.KnownHostsFile, _ = cmdFleet.PersistentFlags().GetString("known-hosts-file")
+
+	config.SshTimeout, _ = cmdFleet.PersistentFlags().GetFloat64("ssh-timeout")
+
+	return config
+}
+
+func getClientConfig(cCmd *cobra.Command) (*ClientConfig, error) {
+	config := &ClientConfig{SSHConfig: getSSHConfig(cCmd)}
+
+	config.ClientDriver, _ = cmdFleet.PersistentFlags().GetString("driver")
+	config.EndPoint, _ = cmdFleet.PersistentFlags().GetString("endpoint")
+	config.ReqTimeout, _ = cmdFleet.PersistentFlags().GetFloat64("request-timeout")
+
+	config.CAFile, _ = cmdFleet.PersistentFlags().GetString("ca-file")
+	config.CertFile, _ = cmdFleet.PersistentFlags().GetString("cert-file")
+	config.KeyFile, _ = cmdFleet.PersistentFlags().GetString("key-file")
+
+	config.EtcdKeyPrefix, _ = cmdFleet.PersistentFlags().GetString("etcd-key-prefix")
+	config.ExperimentalAPI, _ = cmdFleet.PersistentFlags().GetBool("experimental-api")
+
+	return config, nil
+}
+
 func getClientAPI(cCmd *cobra.Command) client.API {
 	var err error
-	cAPI, err = getClient(cCmd)
+	clientConfig, err := getClientConfig(cCmd)
+
+	cAPI, err = GetClient(clientConfig)
 	if err != nil {
 		stderr("Unable to initialize client: %v", err)
 		os.Exit(1)
@@ -312,22 +365,19 @@ func getClientAPI(cCmd *cobra.Command) client.API {
 }
 
 // getClient initializes a client of fleet based on CLI flags
-func getClient(cCmd *cobra.Command) (client.API, error) {
-	clientDriver, _ := cmdFleet.PersistentFlags().GetString("driver")
-
-	switch clientDriver {
-	case clientDriverAPI:
-		return getHTTPClient(cCmd)
-	case clientDriverEtcd:
-		return getRegistryClient(cCmd)
+func GetClient(cfg *ClientConfig) (client.API, error) {
+	switch cfg.ClientDriver {
+	case ClientDriverAPI:
+		return getHTTPClient(cfg)
+	case ClientDriverEtcd:
+		return getRegistryClient(cfg)
 	}
 
-	return nil, fmt.Errorf("unrecognized driver %q", clientDriver)
+	return nil, fmt.Errorf("unrecognized driver %q", cfg.ClientDriver)
 }
 
-func getHTTPClient(cCmd *cobra.Command) (client.API, error) {
-	endPoint, _ := cmdFleet.PersistentFlags().GetString("endpoint")
-	endpoints := strings.Split(endPoint, ",")
+func getHTTPClient(cfg *ClientConfig) (client.API, error) {
+	endpoints := strings.Split(cfg.EndPoint, ",")
 	if len(endpoints) > 1 {
 		log.Warningf("multiple endpoints provided but only the first (%s) is used", endpoints[0])
 	}
@@ -341,15 +391,14 @@ func getHTTPClient(cCmd *cobra.Command) (client.API, error) {
 		return nil, errors.New("URL scheme undefined")
 	}
 
-	tun := getTunnelFlag(cCmd)
+	tun := getTunnelFlag(cfg.SSHConfig)
 	tunneling := tun != ""
 
 	dialUnix := ep.Scheme == "unix" || ep.Scheme == "file"
 
-	SSHUserName, _ := cmdFleet.PersistentFlags().GetString("ssh-username")
 	tunnelFunc := net.Dial
 	if tunneling {
-		sshClient, err := ssh.NewSSHClient(SSHUserName, tun, getChecker(cCmd), true, getSSHTimeoutFlag(cCmd))
+		sshClient, err := ssh.NewSSHClient(cfg.SSHUserName, tun, getChecker(cfg.SSHConfig), true, getSSHTimeoutFlag(cfg.SSHConfig))
 		if err != nil {
 			return nil, fmt.Errorf("failed initializing SSH client: %v", err)
 		}
@@ -396,10 +445,7 @@ func getHTTPClient(cCmd *cobra.Command) (client.API, error) {
 		ep.Host = "domain-sock"
 	}
 
-	CAFile, _ := cmdFleet.PersistentFlags().GetString("ca-file")
-	CertFile, _ := cmdFleet.PersistentFlags().GetString("cert-file")
-	KeyFile, _ := cmdFleet.PersistentFlags().GetString("key-file")
-	tlsConfig, err := pkg.ReadTLSConfigFiles(CAFile, CertFile, KeyFile)
+	tlsConfig, err := pkg.ReadTLSConfigFiles(cfg.CAFile, cfg.CertFile, cfg.KeyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -418,28 +464,25 @@ func getHTTPClient(cCmd *cobra.Command) (client.API, error) {
 	return client.NewHTTPClient(&hc, *ep)
 }
 
-func getEndpoint() string {
+func getEndpoint(cfg *ClientConfig) string {
 	// The user explicitly set --experimental-api=false, so it trumps the
 	// --driver flag. This behavior exists for backwards-compatibilty.
-	experimentalAPI, _ := cmdFleet.PersistentFlags().GetBool("experimental-api")
-	endPoint, _ := cmdFleet.PersistentFlags().GetString("endpoint")
-	if !experimentalAPI {
+	if !cfg.ExperimentalAPI {
 		// Additionally, if the user set --experimental-api=false and did
 		// not change the value of --endpoint, they likely want to use the
 		// old default value.
-		if endPoint == defaultEndpoint {
-			endPoint = "http://127.0.0.1:2379,http://127.0.0.1:4001"
+		if cfg.EndPoint == defaultEndpoint {
+			return "http://127.0.0.1:2379,http://127.0.0.1:4001"
 		}
 	}
-	return endPoint
+	return cfg.EndPoint
 }
 
-func getRegistryClient(cCmd *cobra.Command) (client.API, error) {
+func getRegistryClient(cfg *ClientConfig) (client.API, error) {
 	var dial func(string, string) (net.Conn, error)
-	SSHUserName, _ := cmdFleet.PersistentFlags().GetString("ssh-username")
-	tun := getTunnelFlag(cCmd)
+	tun := getTunnelFlag(cfg.SSHConfig)
 	if tun != "" {
-		sshClient, err := ssh.NewSSHClient(SSHUserName, tun, getChecker(cCmd), false, getSSHTimeoutFlag(cCmd))
+		sshClient, err := ssh.NewSSHClient(cfg.SSHUserName, tun, getChecker(cfg.SSHConfig), false, getSSHTimeoutFlag(cfg.SSHConfig))
 		if err != nil {
 			return nil, fmt.Errorf("failed initializing SSH client: %v", err)
 		}
@@ -453,10 +496,7 @@ func getRegistryClient(cCmd *cobra.Command) (client.API, error) {
 		}
 	}
 
-	CAFile, _ := cmdFleet.PersistentFlags().GetString("ca-file")
-	CertFile, _ := cmdFleet.PersistentFlags().GetString("cert-file")
-	KeyFile, _ := cmdFleet.PersistentFlags().GetString("key-file")
-	tlsConfig, err := pkg.ReadTLSConfigFiles(CAFile, CertFile, KeyFile)
+	tlsConfig, err := pkg.ReadTLSConfigFiles(cfg.CAFile, cfg.CertFile, cfg.KeyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -467,9 +507,9 @@ func getRegistryClient(cCmd *cobra.Command) (client.API, error) {
 	}
 
 	eCfg := etcd.Config{
-		Endpoints:               strings.Split(getEndpoint(), ","),
+		Endpoints:               strings.Split(getEndpoint(cfg), ","),
 		Transport:               trans,
-		HeaderTimeoutPerRequest: getRequestTimeoutFlag(cCmd),
+		HeaderTimeoutPerRequest: getRequestTimeoutFlag(cfg),
 	}
 
 	eClient, err := etcd.New(eCfg)
@@ -477,9 +517,8 @@ func getRegistryClient(cCmd *cobra.Command) (client.API, error) {
 		return nil, err
 	}
 
-	etcdKeyPrefix, _ := cmdFleet.PersistentFlags().GetString("etcd-key-prefix")
 	kAPI := etcd.NewKeysAPI(eClient)
-	reg := registry.NewEtcdRegistry(kAPI, etcdKeyPrefix)
+	reg := registry.NewEtcdRegistry(kAPI, cfg.EtcdKeyPrefix)
 
 	if msg, ok := checkVersion(reg); !ok {
 		stderr(msg)
@@ -489,14 +528,12 @@ func getRegistryClient(cCmd *cobra.Command) (client.API, error) {
 }
 
 // getChecker creates and returns a HostKeyChecker, or nil if any error is encountered
-func getChecker(cCmd *cobra.Command) *ssh.HostKeyChecker {
-	strictHostKeyChecking, _ := cmdFleet.PersistentFlags().GetBool("strict-host-key-checking")
-	if !strictHostKeyChecking {
+func getChecker(cfg *SSHConfig) *ssh.HostKeyChecker {
+	if !cfg.StrictHostKeyChecking {
 		return nil
 	}
 
-	knownHostsFile, _ := cmdFleet.PersistentFlags().GetString("known-hosts-file")
-	keyFile := ssh.NewHostKeyFile(knownHostsFile)
+	keyFile := ssh.NewHostKeyFile(cfg.KnownHostsFile)
 	return ssh.NewHostKeyChecker(keyFile)
 }
 
@@ -592,22 +629,20 @@ func getUnitFileFromTemplate(cCmd *cobra.Command, uni *unit.UnitNameInfo, fileNa
 	return uf, nil
 }
 
-func getTunnelFlag(cCmd *cobra.Command) string {
-	tun, _ := cmdFleet.PersistentFlags().GetString("tunnel")
+func getTunnelFlag(cfg *SSHConfig) string {
+	tun := cfg.Tunnel
 	if tun != "" && !strings.Contains(tun, ":") {
 		tun += ":22"
 	}
 	return tun
 }
 
-func getSSHTimeoutFlag(cCmd *cobra.Command) time.Duration {
-	sshTimeout, _ := cmdFleet.PersistentFlags().GetFloat64("ssh-timeout")
-	return time.Duration(sshTimeout*1000) * time.Millisecond
+func getSSHTimeoutFlag(cfg *SSHConfig) time.Duration {
+	return time.Duration(cfg.SshTimeout*1000) * time.Millisecond
 }
 
-func getRequestTimeoutFlag(cCmd *cobra.Command) time.Duration {
-	reqTimeout, _ := cmdFleet.PersistentFlags().GetFloat64("request-timeout")
-	return time.Duration(reqTimeout*1000) * time.Millisecond
+func getRequestTimeoutFlag(cfg *ClientConfig) time.Duration {
+	return time.Duration(cfg.ReqTimeout*1000) * time.Millisecond
 }
 
 func machineIDLegend(ms machine.MachineState, full bool) string {
