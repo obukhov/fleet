@@ -24,9 +24,6 @@ import (
 	"github.com/coreos/fleet/registry"
 	"github.com/coreos/fleet/schema"
 	"github.com/coreos/fleet/unit"
-	"github.com/coreos/fleet/version"
-
-	"github.com/coreos/go-semver/semver"
 )
 
 type commandTestResults struct {
@@ -128,28 +125,6 @@ func appendJobsForTests(jobs *[]job.Job, machine machine.MachineState, prefix st
 	}
 
 	return
-}
-
-func newFakeRegistryForCheckVersion(v string) registry.ClusterRegistry {
-	sv, err := semver.NewVersion(v)
-	if err != nil {
-		panic(err)
-	}
-
-	return registry.NewFakeClusterRegistry(sv, 0)
-}
-
-func TestCheckVersion(t *testing.T) {
-	reg := newFakeRegistryForCheckVersion(version.Version)
-	_, ok := checkVersion(reg)
-	if !ok {
-		t.Errorf("checkVersion failed but should have succeeded")
-	}
-	reg = newFakeRegistryForCheckVersion("9.0.0")
-	msg, ok := checkVersion(reg)
-	if ok || msg == "" {
-		t.Errorf("checkVersion succeeded but should have failed")
-	}
 }
 
 func TestMachineIDLegend(t *testing.T) {

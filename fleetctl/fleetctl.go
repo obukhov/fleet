@@ -15,14 +15,12 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"math"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -34,36 +32,21 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	etcd "github.com/coreos/etcd/client"
-
 	"github.com/coreos/fleet/api"
 	"github.com/coreos/fleet/client"
 	"github.com/coreos/fleet/job"
 	"github.com/coreos/fleet/log"
 	"github.com/coreos/fleet/machine"
-	"github.com/coreos/fleet/pkg"
 	"github.com/coreos/fleet/registry"
 	"github.com/coreos/fleet/schema"
 	"github.com/coreos/fleet/ssh"
 	"github.com/coreos/fleet/unit"
-	"github.com/coreos/fleet/version"
 )
 
 const (
 	cliName        = "fleetctl"
 	cliDescription = "fleetctl is a command-line interface to fleet, the cluster-wide CoreOS init system."
 
-	oldVersionWarning = `####################################################################
-WARNING: fleetctl (%s) is older than the latest registered
-version of fleet found in the cluster (%s). You are strongly
-recommended to upgrade fleetctl to prevent incompatibility issues.
-####################################################################
-`
-
-	ClientDriverAPI  = "API"
-	ClientDriverEtcd = "etcd"
-
-	defaultEndpoint  = "unix:///var/run/fleet.sock"
 	defaultSleepTime = 2000 * time.Millisecond
 )
 
@@ -144,8 +127,8 @@ func init() {
 
 	cmdFleet.PersistentFlags().BoolVar(&globalFlags.Debug, "debug", false, "Print out more debug information to stderr")
 	cmdFleet.PersistentFlags().BoolVar(&globalFlags.Version, "version", false, "Print the version and exit")
-	cmdFleet.PersistentFlags().StringVar(&globalFlags.ClientDriver, "driver", ClientDriverAPI, fmt.Sprintf("Adapter used to execute fleetctl commands. Options include %q and %q.", ClientDriverAPI, ClientDriverEtcd))
-	cmdFleet.PersistentFlags().StringVar(&globalFlags.Endpoint, "endpoint", defaultEndpoint, fmt.Sprintf("Location of the fleet API if --driver=%s. Alternatively, if --driver=%s, location of the etcd API.", ClientDriverAPI, ClientDriverEtcd))
+	cmdFleet.PersistentFlags().StringVar(&globalFlags.ClientDriver, "driver", client.ClientDriverAPI, fmt.Sprintf("Adapter used to execute fleetctl commands. Options include %q and %q.", client.ClientDriverAPI, client.ClientDriverEtcd))
+	cmdFleet.PersistentFlags().StringVar(&globalFlags.Endpoint, "endpoint", client.DefaultEndpoint, fmt.Sprintf("Location of the fleet API if --driver=%s. Alternatively, if --driver=%s, location of the etcd API.", client.ClientDriverAPI, client.ClientDriverEtcd))
 	cmdFleet.PersistentFlags().StringVar(&globalFlags.EtcdKeyPrefix, "etcd-key-prefix", registry.DefaultKeyPrefix, "Keyspace for fleet data in etcd (development use only!)")
 
 	cmdFleet.PersistentFlags().StringVar(&globalFlags.KeyFile, "key-file", "", "Location of TLS key file used to secure communication with the fleet API or etcd")
@@ -199,21 +182,6 @@ func stdout(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stdout, maybeAddNewline(format), args...)
 }
 
-// checkVersion makes a best-effort attempt to verify that fleetctl is at least as new as the
-// latest fleet version found registered in the cluster. If any errors are encountered or fleetctl
-// is >= the latest version found, it returns true. If it is < the latest found version, it returns
-// false and a scary warning to the user.
-func checkVersion(cReg registry.ClusterRegistry) (string, bool) {
-	fv := version.SemVersion
-	lv, err := cReg.LatestDaemonVersion()
-	if err != nil {
-		log.Errorf("error attempting to check latest fleet version in Registry: %v", err)
-	} else if lv != nil && fv.LessThan(*lv) {
-		return fmt.Sprintf(oldVersionWarning, fv.String(), lv.String()), false
-	}
-	return "", true
-}
-
 func main() {
 	getFlagsFromEnv(cliName, cmdFleet.PersistentFlags())
 
@@ -263,8 +231,8 @@ func main() {
 	if globalFlags.Endpoint != "" && globalFlags.ClientDriver == "" {
 		if u, err := url.Parse(strings.Split(globalFlags.Endpoint, ",")[0]); err == nil {
 			if _, port, err := net.SplitHostPort(u.Host); err == nil && (port == "4001" || port == "2379") {
-				log.Debugf("Defaulting to --driver=%s as --endpoint appears to be etcd", ClientDriverEtcd)
-				globalFlags.ClientDriver = ClientDriverEtcd
+				log.Debugf("Defaulting to --driver=%s as --endpoint appears to be etcd", client.ClientDriverEtcd)
+				globalFlags.ClientDriver = client.ClientDriverEtcd
 			}
 		}
 	}
@@ -300,31 +268,8 @@ func getFlagsFromEnv(prefix string, fs *pflag.FlagSet) {
 	})
 }
 
-type SSHConfig struct {
-	Tunnel                string
-	SSHUserName           string
-	StrictHostKeyChecking bool
-	KnownHostsFile        string
-	SshTimeout            float64
-}
-
-type ClientConfig struct {
-	*SSHConfig
-
-	ClientDriver string
-	EndPoint     string
-	ReqTimeout   float64
-
-	CAFile   string
-	CertFile string
-	KeyFile  string
-
-	EtcdKeyPrefix   string
-	ExperimentalAPI bool
-}
-
-func getSSHConfig(cCmd *cobra.Command) *SSHConfig {
-	config := &SSHConfig{}
+func getSSHConfig(cCmd *cobra.Command) *client.SSHConfig {
+	config := &client.SSHConfig{}
 	config.Tunnel, _ = cmdFleet.PersistentFlags().GetString("tunnel")
 	config.SSHUserName, _ = cmdFleet.PersistentFlags().GetString("ssh-username")
 	config.StrictHostKeyChecking, _ = cmdFleet.PersistentFlags().GetBool("strict-host-key-checking")
@@ -335,8 +280,8 @@ func getSSHConfig(cCmd *cobra.Command) *SSHConfig {
 	return config
 }
 
-func getClientConfig(cCmd *cobra.Command) (*ClientConfig, error) {
-	config := &ClientConfig{SSHConfig: getSSHConfig(cCmd)}
+func getClientConfig(cCmd *cobra.Command) (*client.ClientConfig, error) {
+	config := &client.ClientConfig{SSHConfig: getSSHConfig(cCmd)}
 
 	config.ClientDriver, _ = cmdFleet.PersistentFlags().GetString("driver")
 	config.EndPoint, _ = cmdFleet.PersistentFlags().GetString("endpoint")
@@ -356,185 +301,16 @@ func getClientAPI(cCmd *cobra.Command) client.API {
 	var err error
 	clientConfig, err := getClientConfig(cCmd)
 
-	cAPI, err = GetClient(clientConfig)
+	cAPI, err = client.GetClient(clientConfig)
 	if err != nil {
-		stderr("Unable to initialize client: %v", err)
-		os.Exit(1)
+		if nil == cAPI {
+			stderr("Unable to initialize client: %v", err)
+			os.Exit(1)
+		} else {
+			stderr(err.Error())
+		}
 	}
 	return cAPI
-}
-
-// getClient initializes a client of fleet based on CLI flags
-func GetClient(cfg *ClientConfig) (client.API, error) {
-	switch cfg.ClientDriver {
-	case ClientDriverAPI:
-		return getHTTPClient(cfg)
-	case ClientDriverEtcd:
-		return getRegistryClient(cfg)
-	}
-
-	return nil, fmt.Errorf("unrecognized driver %q", cfg.ClientDriver)
-}
-
-func getHTTPClient(cfg *ClientConfig) (client.API, error) {
-	endpoints := strings.Split(cfg.EndPoint, ",")
-	if len(endpoints) > 1 {
-		log.Warningf("multiple endpoints provided but only the first (%s) is used", endpoints[0])
-	}
-
-	ep, err := url.Parse(endpoints[0])
-	if err != nil {
-		return nil, err
-	}
-
-	if len(ep.Scheme) == 0 {
-		return nil, errors.New("URL scheme undefined")
-	}
-
-	tun := getTunnelFlag(cfg.SSHConfig)
-	tunneling := tun != ""
-
-	dialUnix := ep.Scheme == "unix" || ep.Scheme == "file"
-
-	tunnelFunc := net.Dial
-	if tunneling {
-		sshClient, err := ssh.NewSSHClient(cfg.SSHUserName, tun, getChecker(cfg.SSHConfig), true, getSSHTimeoutFlag(cfg.SSHConfig))
-		if err != nil {
-			return nil, fmt.Errorf("failed initializing SSH client: %v", err)
-		}
-
-		if dialUnix {
-			tgt := ep.Path
-			tunnelFunc = func(string, string) (net.Conn, error) {
-				log.Debugf("Establishing remote fleetctl proxy to %s", tgt)
-				cmd := fmt.Sprintf(`fleetctl fd-forward %s`, tgt)
-				return ssh.DialCommand(sshClient, cmd)
-			}
-		} else {
-			tunnelFunc = sshClient.Dial
-		}
-	}
-
-	dialFunc := tunnelFunc
-	if dialUnix {
-		// This commonly happens if the user misses the leading slash after the scheme.
-		// For example, "unix://var/run/fleet.sock" would be parsed as host "var".
-		if len(ep.Host) > 0 {
-			return nil, fmt.Errorf("unable to connect to host %q with scheme %q", ep.Host, ep.Scheme)
-		}
-
-		// The Path field is only used for dialing and should not be used when
-		// building any further HTTP requests.
-		sockPath := ep.Path
-		ep.Path = ""
-
-		// If not tunneling to the unix socket, http.Client will dial it directly.
-		// http.Client does not natively support dialing a unix domain socket, so the
-		// dial function must be overridden.
-		if !tunneling {
-			dialFunc = func(string, string) (net.Conn, error) {
-				return net.Dial("unix", sockPath)
-			}
-		}
-
-		// http.Client doesn't support the schemes "unix" or "file", but it
-		// is safe to use "http" as dialFunc ignores it anyway.
-		ep.Scheme = "http"
-
-		// The Host field is not used for dialing, but will be exposed in debug logs.
-		ep.Host = "domain-sock"
-	}
-
-	tlsConfig, err := pkg.ReadTLSConfigFiles(cfg.CAFile, cfg.CertFile, cfg.KeyFile)
-	if err != nil {
-		return nil, err
-	}
-
-	trans := pkg.LoggingHTTPTransport{
-		Transport: http.Transport{
-			Dial:            dialFunc,
-			TLSClientConfig: tlsConfig,
-		},
-	}
-
-	hc := http.Client{
-		Transport: &trans,
-	}
-
-	return client.NewHTTPClient(&hc, *ep)
-}
-
-func getEndpoint(cfg *ClientConfig) string {
-	// The user explicitly set --experimental-api=false, so it trumps the
-	// --driver flag. This behavior exists for backwards-compatibilty.
-	if !cfg.ExperimentalAPI {
-		// Additionally, if the user set --experimental-api=false and did
-		// not change the value of --endpoint, they likely want to use the
-		// old default value.
-		if cfg.EndPoint == defaultEndpoint {
-			return "http://127.0.0.1:2379,http://127.0.0.1:4001"
-		}
-	}
-	return cfg.EndPoint
-}
-
-func getRegistryClient(cfg *ClientConfig) (client.API, error) {
-	var dial func(string, string) (net.Conn, error)
-	tun := getTunnelFlag(cfg.SSHConfig)
-	if tun != "" {
-		sshClient, err := ssh.NewSSHClient(cfg.SSHUserName, tun, getChecker(cfg.SSHConfig), false, getSSHTimeoutFlag(cfg.SSHConfig))
-		if err != nil {
-			return nil, fmt.Errorf("failed initializing SSH client: %v", err)
-		}
-
-		dial = func(network, addr string) (net.Conn, error) {
-			tcpaddr, err := net.ResolveTCPAddr(network, addr)
-			if err != nil {
-				return nil, err
-			}
-			return sshClient.DialTCP(network, nil, tcpaddr)
-		}
-	}
-
-	tlsConfig, err := pkg.ReadTLSConfigFiles(cfg.CAFile, cfg.CertFile, cfg.KeyFile)
-	if err != nil {
-		return nil, err
-	}
-
-	trans := &http.Transport{
-		Dial:            dial,
-		TLSClientConfig: tlsConfig,
-	}
-
-	eCfg := etcd.Config{
-		Endpoints:               strings.Split(getEndpoint(cfg), ","),
-		Transport:               trans,
-		HeaderTimeoutPerRequest: getRequestTimeoutFlag(cfg),
-	}
-
-	eClient, err := etcd.New(eCfg)
-	if err != nil {
-		return nil, err
-	}
-
-	kAPI := etcd.NewKeysAPI(eClient)
-	reg := registry.NewEtcdRegistry(kAPI, cfg.EtcdKeyPrefix)
-
-	if msg, ok := checkVersion(reg); !ok {
-		stderr(msg)
-	}
-
-	return &client.RegistryClient{Registry: reg}, nil
-}
-
-// getChecker creates and returns a HostKeyChecker, or nil if any error is encountered
-func getChecker(cfg *SSHConfig) *ssh.HostKeyChecker {
-	if !cfg.StrictHostKeyChecking {
-		return nil
-	}
-
-	keyFile := ssh.NewHostKeyFile(cfg.KnownHostsFile)
-	return ssh.NewHostKeyChecker(keyFile)
 }
 
 // getUnitFile attempts to get a UnitFile configuration
@@ -627,22 +403,6 @@ func getUnitFileFromTemplate(cCmd *cobra.Command, uni *unit.UnitNameInfo, fileNa
 	}
 
 	return uf, nil
-}
-
-func getTunnelFlag(cfg *SSHConfig) string {
-	tun := cfg.Tunnel
-	if tun != "" && !strings.Contains(tun, ":") {
-		tun += ":22"
-	}
-	return tun
-}
-
-func getSSHTimeoutFlag(cfg *SSHConfig) time.Duration {
-	return time.Duration(cfg.SshTimeout*1000) * time.Millisecond
-}
-
-func getRequestTimeoutFlag(cfg *ClientConfig) time.Duration {
-	return time.Duration(cfg.ReqTimeout*1000) * time.Millisecond
 }
 
 func machineIDLegend(ms machine.MachineState, full bool) string {

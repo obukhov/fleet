@@ -27,6 +27,7 @@ import (
 	"github.com/spf13/cobra"
 
 	//     "github.com/coreos/fleet/client"
+	"github.com/coreos/fleet/client"
 	"github.com/coreos/fleet/machine"
 	"github.com/coreos/fleet/pkg"
 	"github.com/coreos/fleet/ssh"
@@ -116,11 +117,11 @@ func runSSH(cCmd *cobra.Command, args []string) (exit int) {
 
 	sshConfig := getSSHConfig(cCmd)
 
-	timeout := getSSHTimeoutFlag(sshConfig)
-	if tun := getTunnelFlag(sshConfig); tun != "" {
-		sshClient, err = ssh.NewTunnelledSSHClient(globalFlags.SSHUserName, tun, addr, getChecker(sshConfig), flagSSHAgentForwarding, timeout)
+	timeout := client.GetSSHTimeoutFlag(sshConfig)
+	if tun := client.GetTunnelFlag(sshConfig); tun != "" {
+		sshClient, err = ssh.NewTunnelledSSHClient(globalFlags.SSHUserName, tun, addr, client.GetChecker(sshConfig), flagSSHAgentForwarding, timeout)
 	} else {
-		sshClient, err = ssh.NewSSHClient(globalFlags.SSHUserName, addr, getChecker(sshConfig), flagSSHAgentForwarding, timeout)
+		sshClient, err = ssh.NewSSHClient(globalFlags.SSHUserName, addr, client.GetChecker(sshConfig), flagSSHAgentForwarding, timeout)
 	}
 	if err != nil {
 		stderr("Failed building SSH client: %v", err)
@@ -272,11 +273,11 @@ func runRemoteCommand(cCmd *cobra.Command, addr string, cmd string, args ...stri
 
 	sshConfig := getSSHConfig(cCmd)
 
-	timeout := getSSHTimeoutFlag(sshConfig)
-	if tun := getTunnelFlag(sshConfig); tun != "" {
-		sshClient, err = ssh.NewTunnelledSSHClient(globalFlags.SSHUserName, tun, addr, getChecker(sshConfig), false, timeout)
+	timeout := client.GetSSHTimeoutFlag(sshConfig)
+	if tun := client.GetTunnelFlag(sshConfig); tun != "" {
+		sshClient, err = ssh.NewTunnelledSSHClient(globalFlags.SSHUserName, tun, addr, client.GetChecker(sshConfig), false, timeout)
 	} else {
-		sshClient, err = ssh.NewSSHClient(globalFlags.SSHUserName, addr, getChecker(sshConfig), false, timeout)
+		sshClient, err = ssh.NewSSHClient(globalFlags.SSHUserName, addr, client.GetChecker(sshConfig), false, timeout)
 	}
 	if err != nil {
 		return err, -1
